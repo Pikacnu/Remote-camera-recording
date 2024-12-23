@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      background-color: #f1f3f4;
+    }
+
+    h1 {
+      text-align: center;
+      margin: 20px 0;
+    }
+
+    #mediaSelect,
+    #audioSelect,
+    #videoSelect {
+      margin: 0 auto;
+      display: block;
+      padding: 10px;
+      font-size: 16px;
+    }
+
+    #videoContainer {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-grow: 1;
+      gap: 10px;
+      padding: 10px;
+      flex-wrap: wrap;
+    }
+
+    video {
+      width: 100%;
+      max-width: 45%;
+      height: auto;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      background-color: black;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>WebRTC Video and Audio Test</h1>
+  <select id="mediaSelect">
+    <option value="camera">Camera</option>
+    <option value="screen">Screen</option>
+  </select>
+  <select id="audioSelect"></select>
+  <select id="videoSelect"></select>
+  <div id="videoContainer">
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" style="display: none;" autoplay playsinline></video>
+  </div>
+  <p id="log">no log here</p>
+
+  <script>
+    const localVideo = document.getElementById('localVideo');
+    const remoteVideo = document.getElementById('remoteVideo');
+    const mediaSelect = document.getElementById('mediaSelect');
+    const audioSelect = document.getElementById('audioSelect');
+    const videoSelect = document.getElementById('videoSelect');
+    const log = document.getElementById('log');
+    const socket = new WebSocket('wss://record.pikacnu.com/ws');
+    let peerConnection = null;
+    const id = Math.random().toString(36).substr(2, 9);
+    let mediaSteam = new MediaStream();
+
+    async function getDevices() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter(device => device.kind === 'audioinput');
+      const videoInputs = devices.filter(device => device.kind === 'videoinput');
+
+      audioSelect.innerHTML = audioInputs.map(device => `<option value="${device.deviceId}">${device.label}</option>`).join('');
+      videoSelect.innerHTML = videoInputs.map(device => `<option value="${device.deviceId}">${device.label}</option>`).join('');
+    }
+    getDevices();
+    async function getMediaStream() {
+      log.textContent = `change to ${mediaSelect.value}`;
+      let stream;
+      const audioSource = audioSelect.value;
+      const videoSource = videoSelect.value;
+
+      try {
+        //clear the previous stream
+        if (localVideo.srcObject) {
+          localVideo.srcObject.getTracks().forEach(track => track.stop());
+        }
+
+        if (mediaSelect.value === 'camera') {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: { deviceId: audioSource ? { exact: audioSource } : undefined },
+            video: Object.assign({ deviceId: videoSource ? { exact: videoSource } : undefined }, {
+              width: { min: 1280, max: 1920 },
+              height: { min: 720, max: 1080 },
+            })
+          });
+        } else {
+          stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        }
+      } catch (error) {
+        if (error.name === 'NotReadableError') {
+          log.textContent = 'Could not start video source. It might be in use by another application or permissions are not granted.';
+        } else {
+          log.textContent = `Error: ${error.message}`;
+        }
+        return;
+      }
+
+      localVideo.srcObject = stream;
+      stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+      createOffer();
+    }
+
+    mediaSelect.addEventListener('change', getMediaStream);
+    audioSelect.addEventListener('change', getMediaStream);
+    videoSelect.addEventListener('change', getMediaStream);
+
+    socket.onmessage = async (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.target === id) {
+        return;
+      }
+      switch (data.type) {
+        case "turn":
+          peerConnection = new RTCPeerConnection(
+            data.iceServers
+          );
+
+          peerConnection.onicecandidate = (event) => {
+            console.log('onicecandidate event:', event);
+            if (event.candidate) {
+              socket.send(JSON.stringify({ type: 'ice-candidate', candidate: event.candidate, target: id }));
+            }
+          };
+
+          peerConnection.ontrack = async event => {
+
+            remoteVideo.srcObject = event.streams[0];
+          };
+
+          peerConnection.onconnectionstatechange = () => {
+            console.log('peerConnection.connectionState:', peerConnection.connectionState);
+            if (peerConnection.connectionState === 'connected') {
+              remoteVideo.style.display = 'block';
+            } else {
+              remoteVideo.style.display = 'none';
+            }
+          };
+          getMediaStream();
+          break;
+        case 'offer':
+          if (data.offer && data.offer.type && data.offer.sdp) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.send(JSON.stringify({ type: 'answer', answer: answer, target: id }));
+
+          } else {
+            console.error('Invalid offer received:', data.offer);
+          }
+          break;
+        case 'answer':
+          if (data.answer && data.answer.type && data.answer.sdp) {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+            console.log('Answer received and set as remote description');
+          } else {
+            console.error('Invalid answer received:', data.answer);
+          }
+          break;
+        case 'ice-candidate':
+          try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } catch (e) {
+            console.error('Error adding received ice candidate', e);
+          }
+          break;
+        default:
+
+      }
+    };
+
+    async function createOffer() {
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      socket.send(JSON.stringify({ type: 'offer', offer: offer, target: id }));
+
+    }
+
+    socket.onopen = () => {
+
+      socket.send(JSON.stringify({ type: 'get-turn' }));
+
+    };
+
+    localVideo.addEventListener('click', () => {
+      if (localVideo.requestFullscreen) {
+        localVideo.requestFullscreen();
+      } else if (localVideo.mozRequestFullScreen) {
+        localVideo.mozRequestFullScreen();
+      } else if (localVideo.webkitRequestFullscreen) {
+        localVideo.webkitRequestFullscreen();
+      } else if (localVideo.msRequestFullscreen) {
+        localVideo.msRequestFullscreen();
+      }
+    });
+
+    remoteVideo.addEventListener('click', () => {
+      if (remoteVideo.requestFullscreen) {
+        remoteVideo.requestFullscreen();
+      } else if (remoteVideo.mozRequestFullScreen) {
+        remoteVideo.mozRequestFullScreen();
+      } else if (remoteVideo.webkitRequestFullscreen) {
+        remoteVideo.webkitRequestFullscreen();
+      } else if (remoteVideo.msRequestFullscreen) {
+        remoteVideo.msRequestFullscreen();
+      }
+    });
+  </script>
+</body>
+
+</html>

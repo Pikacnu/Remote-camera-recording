@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Record</title>
+</head>
+
+<body style="margin: 0;padding: 0;">
+  <video id="localVideo" autoplay muted style="height: 80vh;width: 100%;"></video>
+  <div style="display: flex;">
+    <select id="SelectInput"></select>
+    <button id="Record">Start</button>
+    <input type="text" id="contorlCode" placeholder="control code">
+    <div style="display: flex;">
+      <p> Log:</p>
+      <p id="log"></p>
+    </div>
+  </div>
+  <script>
+    let localVideo = document.getElementById('localVideo');
+    let selectInput = document.getElementById('SelectInput');
+    let recordButton = document.getElementById('Record');
+    let log = document.getElementById('log');
+    let controlCodeInput = document.getElementById('contorlCode');
+    let currentSelectedInput;
+    let stream;
+    let mediaRecorder;
+    let socket;
+    let recordState = false;
+    let chunks = [];
+    let id = '';
+    let socketQueue = [];
+    let videoID = '';
+    let controlCode = '';
+    let controlState = false;
+
+    function generateId() {
+      return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    }
+
+    async function getVideoInputs() {
+      return (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
+    }
+
+    async function getMediaStream(deviceID) {
+      return await navigator.mediaDevices.getUserMedia({
+        video: Object.assign({
+          deviceId: deviceID
+        }, {
+          width: { min: 1280, ideal: 1920, max: 2160, frameRate: { min: 30, ideal: 60 } },
+          height: { min: 720, ideal: 1080, max: 1440 }
+        }),
+        audio: true
+      })
+    }
+
+    async function setupRecorder(stream) {
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp8,opus'
+      });
+      mediaRecorder.ondataavailable = handleData;
+      mediaRecorder.onerror = handleError;
+      return mediaRecorder;
+    }
+
+    async function handleError(event) {
+      console.log('error', event);
+    }
+
+    const chunkSize = 8 * 1024 * 1024; // 8MB
+
+    async function bufferToBase64(buffer) {
+      const arrayBuffer = await buffer.arrayBuffer();
+      const uint8Array = new Uint8Array(arrayBuffer);
+      let binaryString = '';
+      for (let i = 0; i < uint8Array.length; i++) {
+        binaryString += String.fromCharCode(uint8Array[i]);
+      }
+      return btoa(binaryString);
+    }
+    async function sendStop(recordState) {
+      if (!recordState) {
+        socketQueue.push({
+          clientID: id,
+          type: 'control',
+          data: 'end',
+          videoID: videoID
+        });
+
+        /*
+         socket.send(JSON.stringify({
+           clientID: id,
+           type: 'control',
+           data: 'end',
+           videoID: videoID
+         }));
+         */
+      }
+    }
+    async function handleData(event) {
+      if (event.data.size > 0) {
+        //chunks.push(event.data);
+        const buffer = new Blob(chunks, {
+          type: 'video/webm'
+        });
+        const totalSize = buffer.size;
+        let offset = 0;
+        if (totalSize < chunkSize) {
+          const base64Data = await bufferToBase64(event.data);
+          log.innerText = `sending chunk`;
+          socketQueue.push({
+            clientID: id,
+            type: 'data',
+            videoID: videoID,
+            data: base64Data
+          });
+          /*
+          socket.send(JSON.stringify({
+            clientID: id,
+            type: 'data',
+            videoID: videoID,
+            data: base64Data
+          }));*/
+          return sendStop(recordState);
+        }
+        while (offset < totalSize) {
+          const chunk = buffer.slice(offset, Math.min(offset + chunkSize, totalSize));
+          const base64Data = await bufferToBase64(chunk);
+          log.innerText = `sending chunk`;
+
+          socketQueue.push({
+            clientID: id,
+            type: 'data',
+            videoID: videoID,
+            data: base64Data
+          });
+          /*
+          socket.send(JSON.stringify({
+            clientID: id,
+            type: 'data',
+            videoID: videoID,
+            data: base64Data
+          }));*/
+          offset += chunkSize;
+        }
+        return sendStop(recordState);
+      }
+      //if (chunks.length > 0) {
+      //  //log.innerText = `start sending chunks`;
+      //  const buffer = new Blob(chunks, {
+      //    type: 'video/webm'
+      //  });
+      //  const totalSize = buffer.size;
+      //  let offset = 0;
+      //  const sendChunks = async () => {
+      //    while (offset < totalSize) {
+      //      const chunk = buffer.slice(offset, Math.min(offset + chunkSize, totalSize));
+      //      const arrayBuffer = await chunk.arrayBuffer();
+      //      const uint8Array = new Uint8Array(arrayBuffer);
+      //      let binaryString = '';
+      //      for (let i = 0; i < uint8Array.length; i++) {
+      //        binaryString += String.fromCharCode(uint8Array[i]);
+      //      }
+      //      const base64Data = btoa(binaryString);
+      //      console.log('sending chunk', offset, base64Data.length);
+      //      log.innerText = `sending chunk ${offset} ${base64Data.length}`;
+      //      socket.send(JSON.stringify({
+      //        id: id,
+      //        type: 'data',
+      //        data: base64Data
+      //      }));
+      //      offset += chunkSize;
+      //    }
+      //    log.innerText = `end sending chunks`;
+      //    chunks = []; // 清空塊數組以避免遞歸
+      //  };
+      //  sendChunks();
+      //}
+    }
+
+    async function sendQuere(quere) {
+      if (!socket) return;
+      if (quere.length === 0) return;
+      const data = quere.shift();
+      if (data) {
+        try {
+          socket.send(JSON.stringify(data));
+        } catch (e) {
+          quere.unshift(data);
+          console.log(e);
+        }
+      }
+    }
+    setInterval(() => {
+      sendQuere(socketQueue);
+    }, 750);
+
+    async function startRecord(stream) {
+      chunks = [];
+      videoID = generateId();
+      if (!stream) {
+        alert('Please select a camera input');
+        return;
+      }
+      if (!mediaRecorder) {
+        mediaRecorder = await setupRecorder(stream);
+      }
+      await mediaRecorder.start(1000);
+      /*
+      socket.send(JSON.stringify({
+        id: id,
+        type: 'control',
+        data: 'start',
+        videoID: videoID
+      }));
+      */
+      socketQueue.push({
+        clientID: id,
+        type: 'control',
+        data: 'start',
+        videoID: videoID
+      });
+      log.innerText = `start record`;
+    }
+
+    async function endRecord() {
+      await mediaRecorder.stop();
+      log.innerText = `end record`;
+    }
+
+    async function connectSocket() {
+      const socket = new WebSocket('wss://record.pikacnu.com/');
+      socket.onopen = socketOpen;
+      socket.onclose = socketClose;
+      socket.onmessage = socketMessage;
+      return socket;
+    }
+
+    async function socketOpen() {
+      if (controlCode.length > 0) {
+        socket.send(JSON.stringify({
+          clientID: id,
+          type: 'control',
+          data: controlCode,
+        }));
+      }
+      console.log('socket open');
+    }
+
+    async function socketClose() {
+      controlState = false;
+      updateControlState(controlState);
+      console.log('socket close');
+    }
+
+    function updateControlState(state) {
+      if (state) {
+        controlCodeInput.disabled = true;
+        recordButton.disabled = true;
+      } else {
+        controlCodeInput.disabled = false;
+        recordButton.disabled = false;
+      }
+    }
+
+    async function socketMessage(event) {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'heartbeat') {
+          setTimeout(() => {
+            socket.send(JSON.stringify({
+              clientID: id,
+              type: 'heartbeat'
+            }));
+          }, data.data);
+        }
+        if (data.type === 'control') {
+          switch (data.data) {
+            case 'taken':
+              controlState = true;
+              updateControlState(controlState);
+              log.innerText = 'control taken';
+              if (recordState) endRecord();
+              break;
+          }
+          if (controlState) {
+            switch (data.data) {
+              case 'start':
+                startRecord(stream);
+                break;
+              case 'end':
+                endRecord();
+                break;
+            }
+          }
+        }
+      } catch (e) {
+        console.log(e);
+      }
+    }
+
+    setInterval(async () => {
+      if (!socket || socket?.readyState === WebSocket.CLOSED) {
+        console.log('reconnecting');
+        socket = await connectSocket();
+      }
+    }, 200);
+
+    async function updateRecordState(state) {
+      if (state) {
+        selectInput.disabled = true;
+        recordButton.innerText = 'Stop';
+      } else {
+        selectInput.disabled = false;
+        recordButton.innerText = 'Start';
+      }
+    }
+
+    controlCodeInput.addEventListener('change', (e) => {
+      controlCode = e.target.value;
+      socketQueue.push({
+        clientID: id,
+        type: 'control',
+        data: controlCode,
+      });
+    });
+
+    (async () => {
+      //init
+      id = generateId();
+      let videoInputs = await getVideoInputs();
+      socket = await connectSocket();
+
+      //init stream and recorder
+      stream = await getMediaStream(videoInputs[0].deviceId);
+      localVideo.srcObject = stream;
+      mediaRecorder = await setupRecorder(stream);
+
+      //init select input
+      selectInput.innerHTML = videoInputs.map(device => `<option value="${device.deviceId}">${device.label}</option>`).join('');
+      selectInput.addEventListener('change', async () => {
+        currentSelectedInput = selectInput.value;
+        stream = await getMediaStream(currentSelectedInput);
+        mediaRecorder = await setupRecorder(stream);
+        localVideo.srcObject = stream;
+      });
+      recordButton.addEventListener('click', async () => {
+        if (!stream) {
+          alert('Please select a camera input');
+          return;
+        }
+        recordState = !recordState;
+        updateRecordState(recordState);
+        console.log('record state', recordState);
+        if (recordState) return startRecord(stream);
+        endRecord();
+      });
+    })()
+
+  </script>
+</body>
+
+</html>

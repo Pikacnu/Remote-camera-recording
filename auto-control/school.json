@@ -1,0 +1,38 @@
+{
+	"id": "school-example",
+	"code": "for_the_school",
+	"time": [
+		{
+			"start": "8:05",
+			"duration": 50
+		},
+		{
+			"start": "9:10",
+			"duration": 50
+		},
+		{
+			"start": "10:10",
+			"duration": 50
+		},
+		{
+			"start": "11:10",
+			"duration": 50
+		},
+		{
+			"start": "13:00",
+			"duration": 50
+		},
+		{
+			"start": "14:00",
+			"duration": 50
+		},
+		{
+			"start": "15:00",
+			"duration": 50
+		},
+		{
+			"start": "16:00",
+			"duration": 50
+		}
+	]
+}

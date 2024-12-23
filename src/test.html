@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Stream Processing</title>
+</head>
+
+<body>
+  <div style="display: flex;flex-direction: column; align-items: center;">
+    <video id="localVideo" autoplay muted style="height: 80vh;"></video>
+    <div style="display: flex;flex-direction: row;">
+      <select id="cameraSelect"></select>
+      <button id="toggleRecord">Start Recording</button>
+      <p id="recordingTime">Recording Time: 0s</p>
+      <div style="display: flex;margin-left: 1rem;align-items: center;">
+        <p>Socket State : </p>
+        <p id="socket-state"></p>
+      </div>
+    </div>
+  </div>
+  <script>
+    const localVideo = document.getElementById('localVideo');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const toggleRecordButton = document.getElementById('toggleRecord');
+    const recordingTime = document.getElementById('recordingTime');
+    const socketState = document.getElementById('socket-state');
+    let mediaRecorder;
+    let chunks = [];
+    let recordingInterval;
+    let startTime;
+    let stream;
+    let socket = new WebSocket('wss://record.pikacnu.com/stream/connect');
+
+    async function getCameras() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter(device => device.kind === 'videoinput');
+      cameraSelect.innerHTML = videoInputs.map(device => `<option value="${device.deviceId}">${device.label}</option>`).join('');
+    }
+
+    async function getMediaStream() {
+      const videoSource = cameraSelect.value;
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: videoSource ? { exact: videoSource } : undefined },
+        audio: true
+      });
+      localVideo.srcObject = stream;
+      return stream;
+    }
+
+    cameraSelect.addEventListener('change', async () => {
+      stream = await getMediaStream(
+        {
+          video: Object.assign({ deviceId: cameraSelect.value ? { exact: (cameraSelect.value ? cameraSelect.value : 'environment') } : undefined }, {
+            width: { min: 1280, max: 1920, frameRate: { min: 30, ideal: 60 } },
+            height: { min: 720, max: 1080 }
+          }),
+          audio: true
+        }
+      );
+      if (mediaRecorder?.state === 'recording') {
+        mediaRecorder.stop();
+        mediaRecorder.onstop = () => {
+          mediaRecorder = new MediaRecorder(stream, {
+            mimeType: 'video/webm;codecs=vp9',
+            videoBitsPerSecond: 250000000000,
+            audioBitsPerSecond: 128000000
+          });
+          mediaRecorder.ondataavailable = async function (event) {
+            if (event.data.size > 0) {
+              socket.send(JSON.stringify({ 'type': 'stream', 'data': await event.data.text() }));
+              chunks.push(event.data);
+            }
+          };
+          mediaRecorder.start(200);
+        };
+      }
+      localVideo.srcObject = stream;
+    });
+
+    toggleRecordButton.addEventListener('click', async () => {
+      if (mediaRecorder?.state === 'inactive' || !mediaRecorder) {
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.start(200);
+        toggleRecordButton.textContent = 'Stop Recording';
+        startTime = Date.now();
+        recordingInterval = setInterval(() => {
+          const elapsedTime = Math.floor((Date.now() - startTime) / 1000);
+          recordingTime.textContent = `Recording Time: ${elapsedTime}s`;
+        }, 1000);
+        mediaRecorder.ondataavailable = async function (event) {
+          if (event.data.size > 0) {
+            socket.send(JSON.stringify({ 'type': 'stream', 'data': await event.data.text() }));
+            chunks.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = async function () {
+          if (chunks.length === 0) {
+            return alert('No data to send to the server');
+          }
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          const response = await fetch('https://record.pikacnu.com/stream/readable', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/octet-stream'
+            },
+            body: blob
+          });
+
+          console.log('Server response:', await response.text());
+          chunks = []; // Clear the chunks array for the next recording
+          clearInterval(recordingInterval);
+          recordingTime.textContent = 'Recording Time: 0s';
+        };
+      } else if (mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        toggleRecordButton.textContent = 'Start Recording';
+      }
+    });
+
+    getCameras();
+
+    let reconnect;
+    function onOpen() {
+      if (reconnect) {
+        clearInterval(reconnect);
+      }
+      console.log('Connected to the server');
+      console.log('Sending a message to the server');
+      socket.send(JSON.stringify({ type: 'control', event: 'connect' }));
+      socketState.textContent = 'Connected';
+    }
+
+    function onMessage(event) {
+      console.log('Server message:', event.data);
+      const data = JSON.parse(event.data);
+      if (data.type === 'control') {
+        switch (data.event) {
+          case 'taken-control':
+            socketState.textContent = 'Taken control';
+            toggleRecordButton.disabled = true;
+            break;
+          case 'control-denied':
+            socketState.textContent = 'Control denied';
+            toggleRecordButton.disabled = false;
+            break;
+          case 'start':
+            toggleRecordButton.click();
+            break;
+          case 'stop':
+            toggleRecordButton.click();
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    socket.addEventListener('close', onClose);
+    function onClose() {
+      socketState.textContent = 'Disconnected';
+      console.log('Disconnected from the server');
+      reconnect = setInterval(() => {
+        socket.removeEventListener('open', onOpen);
+        socket.removeEventListener('message', onMessage);
+      }, 5 * 1000);
+      socket.addEventListener('error', onError);
+      function onError(error) {
+        socket = new WebSocket('wss://record.pikacnu.com/stream/connect');
+        socket.addEventListener('open', onOpen);
+        socket.addEventListener('message', onMessage);
+        socket.addEventListener('close', onClose);
+        socket.addEventListener('error', onError);
+      }
+      socket.addEventListener('error', (error) => {
+        socketState.textContent = 'Error';
+        console.error('WebSocket error:', error);
+      });
+    }
+  </script>
+</body>
+
+</html>
