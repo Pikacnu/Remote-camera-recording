@@ -1,4 +1,5 @@
 import { readdir } from 'fs/promises';
+import { $ } from 'bun';
 
 type VideoData = {
 	id: string;
@@ -25,6 +26,7 @@ const server = Bun.serve<{
 
 		return new Response(Bun.file('./src/stream.html'));
 	},
+
 	port: 8080,
 	reusePort: true,
 	websocket: {
@@ -73,10 +75,12 @@ const server = Bun.serve<{
 							if (videoData) {
 								const blob = new Blob(videoData.data, { type: 'video/webm' });
 								const arrayBuffer = await blob.arrayBuffer();
-								Bun.write(
-									`./saves/${clientID}-${videoID}-${new Date().getTime()}.webm`,
+								const currentTime = new Date().getTime();
+								await Bun.write(
+									`./saves/${clientID}-${videoID}-${currentTime}.webm`,
 									new Uint8Array(arrayBuffer),
 								);
+								$`ffmpeg -i ./saves/${clientID}-${videoID}-${currentTime}.webm -c copy ./saves/${clientID}-${videoID}-${currentTime}.mp4`;
 							}
 							VideoDatas = VideoDatas.filter(
 								(vd) => vd.id !== videoID && vd.clientID !== clientID,
@@ -117,7 +121,7 @@ const server = Bun.serve<{
 	},
 });
 
-setInterval(() => {
+function contorl_Event() {
 	controlData.forEach((control) => {
 		const currentHour = new Date().getHours();
 		const currentMinute = new Date().getMinutes();
@@ -126,7 +130,6 @@ setInterval(() => {
 				const [hour, minute] = time.start
 					.split(':')
 					.map((t: string) => parseInt(t));
-				const duration = time.duration;
 				if (currentHour === hour && currentMinute === minute) return true;
 				return false;
 			},
@@ -141,8 +144,15 @@ setInterval(() => {
 				`control-${control.id}`,
 				JSON.stringify({ type: 'control', name: control.id, data: 'end' }),
 			);
-		}, currentEvent.duration * 60 * 1000);
+		}, (currentEvent.duration + 1.5) * 60 * 1000);
 	});
+}
+
+setInterval(() => {
+	contorl_Event();
 }, 60 * 1000);
+setTimeout(() => {
+	contorl_Event();
+}, 1000);
 
 console.log('Server started on port 8080');

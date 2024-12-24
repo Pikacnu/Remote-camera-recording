@@ -81,7 +81,7 @@
       return btoa(binaryString);
     }
     async function sendStop(recordState) {
-      if (!recordState) {
+      if (recordState) {
         socketQueue.push({
           clientID: id,
           type: 'control',
@@ -227,6 +227,12 @@
 
     async function endRecord() {
       await mediaRecorder.stop();
+      socketQueue.push({
+        clientID: id,
+        type: 'control',
+        data: 'end',
+        videoID: videoID
+      });
       log.innerText = `end record`;
     }
 
@@ -288,9 +294,11 @@
           if (controlState) {
             switch (data.data) {
               case 'start':
+                log.innerText = 'start record from control';
                 startRecord(stream);
                 break;
               case 'end':
+                log.innerText = 'end record from control';
                 endRecord();
                 break;
             }
