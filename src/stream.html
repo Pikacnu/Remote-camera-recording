@@ -45,12 +45,14 @@
     }
 
     async function getMediaStream(deviceID) {
+      stream?.getTracks().forEach(track => track.stop());
       return await navigator.mediaDevices.getUserMedia({
         video: Object.assign({
-          deviceId: deviceID
+          deviceId: deviceID,
         }, {
-          width: { min: 1280, ideal: 1920, max: 2160, frameRate: { min: 30, ideal: 60 } },
-          height: { min: 720, ideal: 1080, max: 1440 }
+          width: { min: 1280, ideal: 1920, max: 2160 },
+          height: { min: 720, ideal: 1080, max: 1440 },
+          frameRate: { min: 30, ideal: 60 },
         }),
         audio: {
           channelCount: 2, // Request stereo audio
@@ -86,22 +88,13 @@
       return btoa(binaryString);
     }
     async function sendStop(recordState) {
-      if (recordState) {
+      if (!recordState) {
         socketQueue.push({
           clientID: id,
           type: 'control',
           data: 'end',
           videoID: videoID
         });
-
-        /*
-         socket.send(JSON.stringify({
-           clientID: id,
-           type: 'control',
-           data: 'end',
-           videoID: videoID
-         }));
-         */
       }
     }
     async function handleData(event) {
@@ -188,6 +181,7 @@
     async function sendQuere(quere) {
       if (!socket) return;
       if (quere.length === 0) return;
+      console.log('send quere', quere);
       const data = quere.shift();
       if (data) {
         try {
@@ -232,12 +226,13 @@
 
     async function endRecord() {
       await mediaRecorder.stop();
+      /*
       socketQueue.push({
         clientID: id,
         type: 'control',
         data: 'end',
         videoID: videoID
-      });
+      });*/
       log.innerText = `end record`;
     }
 
@@ -277,6 +272,7 @@
     }
 
     async function socketMessage(event) {
+      console.log('message', event.data);
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'heartbeat') {
@@ -296,6 +292,7 @@
               if (recordState) endRecord();
               break;
           }
+          if (data.name !== controlCode) return;
           if (controlState) {
             switch (data.data) {
               case 'start':
@@ -344,16 +341,36 @@
       //init
       id = generateId();
       let videoInputs = await getVideoInputs();
+      if (videoInputs.length === 0) {
+        alert('No camera found');
+        const interval = setInterval(async () => {
+          videoInputs = await getVideoInputs();
+          selectInput.innerHTML = videoInputs.map(device => `<option value="${device.deviceId}">${device.label}</option>`).join('')
+        }, 1000);
+        setInterval(() => {
+          if (videoInputs.length > 0) {
+            clearInterval(interval);
+          }
+        }, 500);
+        return;
+      }
       socket = await connectSocket();
 
       //init stream and recorder
       stream = await getMediaStream(videoInputs[0].deviceId);
+      if (!stream) {
+        while (True) {
+          alert('Please allow camera access');
+          stream = await getMediaStream(videoInputs[0].deviceId);
+          if (stream) break;
+        }
+      }
       localVideo.srcObject = stream;
       mediaRecorder = await setupRecorder(stream);
 
       //init select input
       selectInput.innerHTML = videoInputs.map(device => `<option value="${device.deviceId}">${device.label}</option>`).join('');
-      selectInput.addEventListener('change', async () => {
+      selectInput.addEventListener('input', async () => {
         currentSelectedInput = selectInput.value;
         stream = await getMediaStream(currentSelectedInput);
         mediaRecorder = await setupRecorder(stream);
@@ -371,7 +388,6 @@
         endRecord();
       });
     })()
-
   </script>
 </body>
 
