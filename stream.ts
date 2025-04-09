@@ -1,11 +1,15 @@
 import { readdir } from 'fs/promises';
-import { $ } from 'bun';
+import { $, type Subprocess } from 'bun';
 
 type VideoData = {
 	id: string;
 	data: Uint8Array[];
 	clientID: string;
+	createdAt: number;
+	ffmpeg: Subprocess;
 };
+
+const SAVE_PATH = './saves';
 
 let VideoDatas: VideoData[] = [];
 const heartbeatsTimeout = 10 * 1000;
@@ -65,22 +69,38 @@ const server = Bun.serve<{
 					);
 					switch (data.data) {
 						case 'start':
+							const createAt = new Date().getTime();
 							VideoDatas.push({
 								clientID: clientID,
 								id: videoID,
 								data: [],
+								createdAt: createAt,
+								ffmpeg: Bun.spawn(
+									[
+										'ffmpeg',
+										'-i',
+										'pipe:0',
+										`${SAVE_PATH}/${clientID}-${videoID}-${createAt}.webm`,
+									],
+									{
+										stdio: ['pipe', 'ignore', 'ignore'],
+									},
+								),
 							});
 							break;
 						case 'end':
 							if (videoData) {
+								/*
 								const blob = new Blob(videoData.data, { type: 'video/webm' });
 								const arrayBuffer = await blob.arrayBuffer();
 								const currentTime = new Date().getTime();
 								await Bun.write(
 									`./saves/${clientID}-${videoID}-${currentTime}.webm`,
 									new Uint8Array(arrayBuffer),
-								);
-								$`ffmpeg -i ./saves/${clientID}-${videoID}-${currentTime}.webm -c copy ./saves/${clientID}-${videoID}-${currentTime}.mp4`;
+								);*/
+								if (typeof videoData.ffmpeg.stdin !== 'number') {
+									videoData.ffmpeg.stdin?.end();
+								}
 							}
 							VideoDatas = VideoDatas.filter(
 								(vd) => vd.id !== videoID && vd.clientID !== clientID,
@@ -106,7 +126,13 @@ const server = Bun.serve<{
 					);
 					if (!videoData || !videoID) return;
 					const uint8Array = new Uint8Array(Buffer.from(data.data, 'base64'));
+					/*
 					videoData.data.push(uint8Array);
+					*/
+					if (typeof videoData.ffmpeg.stdin !== 'number') {
+						videoData.ffmpeg.stdin?.write(uint8Array);
+					}
+
 					VideoDatas = VideoDatas.map((vd) =>
 						vd.id === videoID ? videoData : vd,
 					);
